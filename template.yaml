@@ -1,0 +1,228 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: 'Google Workspace to AWS SSO Group Sync - Serverless Solution'
+
+Parameters:
+  IdentityStoreId:
+    Type: String
+    Description: AWS SSO Identity Store ID (get from 'aws sso-admin list-instances')
+    AllowedPattern: '^d-[0-9a-f]{10}$'
+    ConstraintDescription: Must be a valid Identity Store ID (format d-xxxxxxxxxx)
+  
+  GoogleDomain:
+    Type: String
+    Description: Your Google Workspace domain (e.g., company.com)
+    AllowedPattern: '^[a-zA-Z0-9][a-zA-Z0-9-]{0,61}[a-zA-Z0-9]\.[a-zA-Z]{2,}$'
+    ConstraintDescription: Must be a valid domain name
+  
+  GoogleAdminEmail:
+    Type: String
+    Description: Google Workspace admin email for domain-wide delegation
+    AllowedPattern: '^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    ConstraintDescription: Must be a valid email address
+  
+  SyncSchedule:
+    Type: String
+    Description: EventBridge schedule expression for sync frequency
+    Default: 'rate(15 minutes)'
+  
+  IncludeGroups:
+    Type: CommaDelimitedList
+    Description: 'Comma-separated list of groups to sync (leave empty to sync all)'
+    Default: ''
+  
+  ExcludeGroups:
+    Type: CommaDelimitedList
+    Description: 'Comma-separated list of groups to exclude from sync'
+    Default: ''
+  
+  RemoveExtraMembers:
+    Type: String
+    Description: Remove users from AWS SSO groups if they are not in Google Workspace group
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+  
+  LogRetentionDays:
+    Type: Number
+    Description: CloudWatch log retention period in days
+    Default: 30
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288, 3653]
+
+
+
+Globals:
+  Function:
+    Timeout: 900
+    MemorySize: 512
+    Runtime: python3.11
+    Environment:
+      Variables:
+        LOG_LEVEL: INFO
+
+Resources:
+  # Secrets Manager for storing configuration
+  GSuiteSyncSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: gsuite-aws-sso-sync-config
+      Description: Configuration for Google Workspace to AWS SSO sync
+      SecretString: !Sub |
+        {
+          "google": {
+            "service_account_key_b64": "REPLACE_WITH_BASE64_ENCODED_SERVICE_ACCOUNT_JSON",
+            "admin_email": "${GoogleAdminEmail}",
+            "domain": "${GoogleDomain}",
+            "scopes": [
+              "https://www.googleapis.com/auth/admin.directory.group.readonly",
+              "https://www.googleapis.com/auth/admin.directory.user.readonly"
+            ]
+          },
+          "aws": {
+            "identity_store_id": "${IdentityStoreId}"
+          },
+          "sync": {
+            "include_groups": [],
+            "exclude_groups": [],
+            "remove_extra_members": ${RemoveExtraMembers}
+          }
+        }
+
+  # IAM Role for Lambda function
+  GSuiteSyncLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-lambda-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: GSuiteSyncPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Ref GSuiteSyncSecret
+              - Effect: Allow
+                Action:
+                  - identitystore:ListGroups
+                  - identitystore:ListUsers
+                  - identitystore:CreateGroup
+                  - identitystore:ListGroupMemberships
+                  - identitystore:CreateGroupMembership
+                  - identitystore:DeleteGroupMembership
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*'
+
+
+
+  # Lambda function
+  GSuiteSyncFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-sync-function'
+      Description: Sync groups from Google Workspace to AWS SSO
+      Runtime: python3.11
+      Handler: lambda_function.lambda_handler
+      Role: !GetAtt GSuiteSyncLambdaRole.Arn
+      Timeout: 900
+      MemorySize: 512
+      Code:
+        ZipFile: |
+          import json
+          def lambda_handler(event, context):
+              return {'statusCode': 200, 'body': 'Placeholder - will be updated with deployment'}
+      Environment:
+        Variables:
+          LOG_LEVEL: INFO
+
+  # EventBridge rule for scheduled sync
+  GSuiteSyncScheduleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${AWS::StackName}-sync-schedule'
+      Description: Schedule for Google Workspace to AWS SSO sync
+      ScheduleExpression: !Ref SyncSchedule
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt GSuiteSyncFunction.Arn
+          Id: GSuiteSyncTarget
+
+  # Permission for EventBridge to invoke Lambda
+  GSuiteSyncLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref GSuiteSyncFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt GSuiteSyncScheduleRule.Arn
+
+  # CloudWatch Log Group
+  GSuiteSyncLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${GSuiteSyncFunction}'
+      RetentionInDays: !Ref LogRetentionDays
+
+  # SNS Topic for notifications
+  GSuiteSyncNotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${AWS::StackName}-notifications'
+      DisplayName: GSuite AWS SSO Sync Notifications
+
+  # CloudWatch Alarm for Lambda errors
+  GSuiteSyncErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${AWS::StackName}-lambda-errors'
+      AlarmDescription: Alert when Lambda function has errors
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref GSuiteSyncFunction
+      AlarmActions:
+        - !Ref GSuiteSyncNotificationTopic
+
+Outputs:
+  LambdaFunctionArn:
+    Description: ARN of the Lambda function
+    Value: !GetAtt GSuiteSyncFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-lambda-arn'
+
+  SecretArn:
+    Description: ARN of the Secrets Manager secret
+    Value: !Ref GSuiteSyncSecret
+    Export:
+      Name: !Sub '${AWS::StackName}-secret-arn'
+
+  ScheduleRuleArn:
+    Description: ARN of the EventBridge rule
+    Value: !GetAtt GSuiteSyncScheduleRule.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-schedule-arn'
+
+  NotificationTopicArn:
+    Description: ARN of the SNS notification topic
+    Value: !Ref GSuiteSyncNotificationTopic
+    Export:
+      Name: !Sub '${AWS::StackName}-notification-topic-arn'
