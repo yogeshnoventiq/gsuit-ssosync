@@ -27,12 +27,12 @@ Parameters:
     Default: 'rate(15 minutes)'
   
   IncludeGroups:
-    Type: CommaDelimitedList
+    Type: String
     Description: 'Comma-separated list of groups to sync (leave empty to sync all)'
     Default: ''
   
   ExcludeGroups:
-    Type: CommaDelimitedList
+    Type: String
     Description: 'Comma-separated list of groups to exclude from sync'
     Default: ''
   

@@ -7,6 +7,7 @@ import json
 import base64
 import boto3
 import sys
+from pathlib import Path
 
 def get_stack_parameters(stack_name):
     """Get parameters from CloudFormation stack"""
@@ -46,9 +47,13 @@ def update_secret():
             print("❌ Could not retrieve stack parameters. Make sure the stack is deployed.")
             sys.exit(1)
         
-        # Read service account JSON
+        # Validate and read service account JSON
         print(f"📖 Reading service account file: {service_account_file}")
-        with open(service_account_file, 'r') as f:
+        file_path = Path(service_account_file).resolve()
+        if not file_path.exists() or not file_path.is_file():
+            raise ValueError(f"Invalid service account file: {service_account_file}")
+        
+        with open(file_path, 'r') as f:
             service_account_json = f.read()
         
         # Encode to base64

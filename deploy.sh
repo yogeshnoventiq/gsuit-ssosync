@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Google Workspace to AWS SSO Group Sync - Serverless Deployment Script
+# Enhanced Google Workspace to AWS SSO Group Sync - Deployment Script with Fixes
 
 set -e
 
@@ -9,7 +9,6 @@ STACK_NAME="gsuite-aws-sso-sync"
 REGION=$(aws configure get region 2>/dev/null || echo "us-east-1")
 BUCKET_PREFIX="gsuite-sync-deploy"
 
-
 # Function to show usage
 show_usage() {
     echo "Usage: $0 [OPTIONS]"
@@ -17,18 +16,24 @@ show_usage() {
     echo "  -s, --stack-name NAME        CloudFormation stack name (default: gsuite-aws-sso-sync)"
     echo "  -r, --region REGION          AWS region (default: from AWS CLI config or us-east-1)"
     echo "  -i, --identity-store-id ID   AWS SSO Identity Store ID (required)"
-    echo "  -d, --domain DOMAIN          Google Workspace domain (required)"
+    echo "  -d, --domain DOMAIN          Primary Google Workspace domain (required)"
     echo "  -e, --admin-email EMAIL      Google Workspace admin email (required)"
     echo "  -k, --service-account FILE   Path to Google service account JSON file (required)"
     echo "  --schedule EXPRESSION        Sync schedule (default: rate(15 minutes))"
     echo "  --include-groups GROUPS      Comma-separated list of groups to include"
     echo "  --exclude-groups GROUPS      Comma-separated list of groups to exclude"
-    echo "  --remove-extra-members       Remove users from AWS SSO if not in Google group"
+    echo "  --remove-extra-members       Remove users/groups from AWS SSO if not in Google"
     echo "  --log-retention DAYS         CloudWatch log retention days (default: 30)"
     echo "  -h, --help                   Show this help message"
     echo ""
     echo "Example:"
-    echo "  $0 -i d-1234567890 -d company.com -e admin@company.com -k /path/to/service-account.json"
+    echo "  $0 -i d-1234567890 -d company.com -e admin@company.com -k /path/to/service-account.json --remove-extra-members"
+    echo ""
+    echo "🔧 Fixes included in this version:"
+    echo "  ✅ Automatic user creation from Google Workspace"
+    echo "  ✅ Multi-domain group support (fetches all groups, not just primary domain)"
+    echo "  ✅ User cleanup when removed from Google Workspace"
+    echo "  ✅ Group cleanup when removed from Google Workspace"
 }
 
 # Parse command line arguments
@@ -104,12 +109,13 @@ if [[ ! -f "$SERVICE_ACCOUNT_FILE" ]]; then
     exit 1
 fi
 
-echo "🚀 Deploying Google Workspace to AWS SSO Group Sync..."
+echo "🚀 Deploying Enhanced Google Workspace to AWS SSO Group Sync..."
 echo "Stack Name: $STACK_NAME"
 echo "Region: $REGION"
 echo "Domain: $GOOGLE_DOMAIN"
 echo "Admin Email: $GOOGLE_ADMIN_EMAIL"
 echo "Identity Store ID: $IDENTITY_STORE_ID"
+echo "Remove Extra Members: ${REMOVE_EXTRA_MEMBERS:-false}"
 echo ""
 
 # Check if AWS CLI is configured
@@ -141,11 +147,22 @@ PARAMETER_OVERRIDES=(
     "GoogleDomain=${GOOGLE_DOMAIN}"
     "GoogleAdminEmail=${GOOGLE_ADMIN_EMAIL}"
     "SyncSchedule=${SYNC_SCHEDULE:-rate(15 minutes)}"
-    "IncludeGroups=${INCLUDE_GROUPS:-}"
-    "ExcludeGroups=${EXCLUDE_GROUPS:-}"
     "RemoveExtraMembers=${REMOVE_EXTRA_MEMBERS:-false}"
     "LogRetentionDays=${LOG_RETENTION:-30}"
 )
+
+# Handle include/exclude groups separately to avoid CloudFormation CommaDelimitedList issues
+if [[ -n "$INCLUDE_GROUPS" ]]; then
+    PARAMETER_OVERRIDES+=("IncludeGroups=${INCLUDE_GROUPS}")
+else
+    PARAMETER_OVERRIDES+=("IncludeGroups=")
+fi
+
+if [[ -n "$EXCLUDE_GROUPS" ]]; then
+    PARAMETER_OVERRIDES+=("ExcludeGroups=${EXCLUDE_GROUPS}")
+else
+    PARAMETER_OVERRIDES+=("ExcludeGroups=")
+fi
 
 # Deploy CloudFormation stack
 echo "🏗️  Deploying CloudFormation stack..."
@@ -207,9 +224,14 @@ aws cloudformation describe-stacks \
     --query 'Stacks[0].Outputs'
 
 echo ""
-echo "✅ Deployment completed successfully!"
+echo "✅ Enhanced deployment completed successfully!"
 echo ""
-echo "🎉 Your Google Workspace to AWS SSO sync is now active!"
+echo "🎉 Your Google Workspace to AWS SSO sync is now active with fixes!"
+echo ""
+echo "🔧 New Features:"
+echo "   ✅ Automatic user creation from Google Workspace"
+echo "   ✅ Multi-domain group support"
+echo "   ✅ User/group cleanup when removed from Google"
 echo ""
 echo "📝 Next steps:"
 echo "1. Test the Lambda function:"
@@ -221,15 +243,6 @@ echo ""
 echo "3. Check sync results:"
 echo "   cat response.json"
 echo ""
-echo "📊 Deployment Summary:"
-echo "   Stack Name: ${STACK_NAME}"
-echo "   Region: ${REGION}"
-echo "   Domain: ${GOOGLE_DOMAIN}"
-echo "   Admin Email: ${GOOGLE_ADMIN_EMAIL}"
-echo "   Service Account: ${SERVICE_ACCOUNT_FILE}"
-echo ""
-echo "🔄 Sync will run automatically based on your schedule."
-echo "   Manual trigger: aws lambda invoke --function-name ${STACK_NAME}-sync-function response.json --region ${REGION}"
 
 # Cleanup
 rm -f function.zip packaged-template.yaml
